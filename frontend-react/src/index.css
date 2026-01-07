@@ -1,0 +1,76 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+html {
+  height: 100%;
+  width: 100%;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f0f4f8;
+  color: #1a202c;
+  height: 100%;
+  width: 100%;
+}
+
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: #2d3748;
+  margin-bottom: 0.5rem;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  border: none;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.badge-baik {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-sedang {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.badge-tidak-sehat {
+  background: #f8d7da;
+  color: #721c24;
+}
