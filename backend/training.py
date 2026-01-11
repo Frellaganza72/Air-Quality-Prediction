@@ -739,24 +739,24 @@ def train_cnn():
         """Enhanced CNN with encoder-decoder for heatmap + regression branch"""
         inp = keras.Input(shape=(grid_size, grid_size, in_channels), name="input_grid")
 
-        # Encoder
+        # Encoder (reduced regularization untuk lebih banyak variasi)
         x = layers.Conv2D(32, 3, padding='same', activation='relu',
-                         kernel_regularizer=regularizers.l2(0.001))(inp)
+                         kernel_regularizer=regularizers.l2(0.0001))(inp)  # reduced from 0.001
         x = layers.BatchNormalization()(x)
         x = layers.Conv2D(64, 3, padding='same', activation='relu',
-                         kernel_regularizer=regularizers.l2(0.001))(x)
+                         kernel_regularizer=regularizers.l2(0.0001))(x)  # reduced from 0.001
         x = layers.MaxPooling2D(2)(x)
-        x = layers.SpatialDropout2D(0.2)(x)
+        x = layers.SpatialDropout2D(0.1)(x)  # reduced from 0.2
 
         x = layers.Conv2D(128, 3, padding='same', activation='relu',
-                         kernel_regularizer=regularizers.l2(0.0001))(x)
+                         kernel_regularizer=regularizers.l2(0.00005))(x)  # reduced from 0.0001
         x = layers.BatchNormalization()(x)
         x = layers.MaxPooling2D(2)(x)
-        x = layers.SpatialDropout2D(0.1)(x)
+        x = layers.SpatialDropout2D(0.05)(x)  # reduced from 0.1
 
         # Bottleneck
         x = layers.Conv2D(256, 3, padding='same', activation='relu',
-                         kernel_regularizer=regularizers.l2(0.00005))(x)
+                         kernel_regularizer=regularizers.l2(0.00001))(x)  # reduced from 0.00005
         x = layers.BatchNormalization()(x)
 
         # Heatmap decoder branch
@@ -769,16 +769,17 @@ def train_cnn():
         # ensure exact GRID_SIZE output even when intermediate dims are not exact
         h = layers.Resizing(grid_size, grid_size, interpolation='bilinear')(h)
         
-        heatmap_out = layers.Conv2D(out_channels, 1, padding='same', activation='relu',
+        heatmap_out = layers.Conv2D(out_channels, 1, padding='same', activation='linear',  # linear activation untuk full range
                                     name='heatmap_out')(h)
 
-        # Regression branch (scalar) - with wider range
+        # Regression branch (scalar) - wider capacity
         r = layers.GlobalAveragePooling2D()(x)
-        r = layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.00001))(r)
-        r = layers.Dropout(0.15)(r)
-        r = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.00001))(r)
-        r = layers.Dropout(0.1)(r)
+        r = layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.000001))(r)  # reduced from 0.00001
+        r = layers.Dropout(0.1)(r)  # reduced from 0.15
+        r = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.000001))(r)  # reduced from 0.00001
+        r = layers.Dropout(0.05)(r)  # reduced from 0.1
         r = layers.Dense(64, activation='relu')(r)
+        r = layers.Dense(32, activation='relu')(r)  # tambah layer untuk capacity
         reg_out = layers.Dense(out_channels, activation='linear', name='reg_out')(r)
 
         model = keras.Model(inp, outputs=[reg_out, heatmap_out], name="cnn_multihead")
@@ -786,16 +787,26 @@ def train_cnn():
 
     model = build_multihead_cnn()
     
-    # Custom weighted regression loss (higher weight for CO scalar)
+    # Custom weighted regression loss with variance penalty (IMPROVES VARIATION)
     def weighted_reg_loss(y_true, y_pred):
+        """Loss yang mendorong prediksi lebih bervariasi dengan variance penalty"""
         w = tf.constant([1.0, 1.0, 2.5], dtype=tf.float32)
-        se = tf.square(y_true - y_pred) * w
-        return tf.reduce_mean(tf.reduce_sum(se, axis=-1))
+        mae = tf.abs(y_true - y_pred) * w
+        
+        # Tambahkan penalty untuk prediksi yang terlalu uniform
+        # Ini mendorong model untuk belajar lebih banyak variasi
+        pred_std = tf.math.reduce_std(y_pred, axis=0)
+        true_std = tf.math.reduce_std(y_true, axis=0)
+        
+        # Penalties untuk underfitting pada variasi
+        variance_penalty = tf.reduce_mean(tf.maximum(0.0, true_std - pred_std)) * 0.1
+        
+        return tf.reduce_mean(mae) + variance_penalty
 
     opt = keras.optimizers.Adam(learning_rate=1e-3, clipnorm=1.0)
     model.compile(optimizer=opt,
-                  loss={'reg_out': weighted_reg_loss, 'heatmap_out': 'huber'},
-                  loss_weights={'reg_out':1.0, 'heatmap_out':1.0},
+                  loss={'reg_out': weighted_reg_loss, 'heatmap_out': 'mse'},  # MSE lebih baik dr Huber untuk variasi
+                  loss_weights={'reg_out':1.0, 'heatmap_out':0.8},  # kurangi heatmap weight
                   metrics={})
     model.summary()
 
@@ -1241,35 +1252,53 @@ def train_gru():
     if X_train_seq.shape[0] == 0:
         raise RuntimeError("Not enough sequences. Reduce SEQUENCE_LENGTH or add data.")
 
-    # Build multi-head GRU (simple)
+    # Build multi-head GRU (enhanced for better variation)
     def build_simple_model(input_shape, n_targets, lr=5e-4):
         """
-        Simplest possible model:
-        - Single GRU layer (8 units only!)
-        - Minimal regularization
-        - Direct outputs
+        Enhanced GRU model with better capacity for capturing variations:
+        - Dual GRU layers (64 + 32 units) untuk lebih banyak capacity
+        - Reduced regularization untuk eksplorasi penuh output space
+        - Variance-aware loss
         """
         inp = keras.Input(shape=input_shape)
 
-        # Single tiny GRU
-        x = layers.GRU(8,
+        # Dual GRU layers dengan lebih banyak units
+        x = layers.GRU(64,  # increased from 8
+                       return_sequences=True,
+                       kernel_regularizer=regularizers.l2(0.0001),  # reduced from 0.01
+                       recurrent_regularizer=regularizers.l2(0.00005))(inp)
+        x = layers.Dropout(0.1)(x)
+        
+        x = layers.GRU(32,  # tambah layer kedua
                        return_sequences=False,
-                       kernel_regularizer=regularizers.l2(0.01))(inp)
+                       kernel_regularizer=regularizers.l2(0.0001),
+                       recurrent_regularizer=regularizers.l2(0.00005))(x)
+        x = layers.Dropout(0.1)(x)
 
-        # Direct outputs (no hidden layer)
+        # Dense layers dengan lebih banyak capacity
+        x = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.00001))(x)
+        x = layers.Dropout(0.08)(x)
+        x = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(0.00001))(x)
+        x = layers.Dropout(0.05)(x)
+        x = layers.Dense(32, activation='relu')(x)
+        
+        # Multi-head outputs (no shared layer sebelum output untuk independence)
         outputs = []
         for i in range(n_targets):
-            out = layers.Dense(1, name=f'out_{i}')(x)
+            out = layers.Dense(1, activation='linear', name=f'out_{i}')(x)  # linear untuk full range
             outputs.append(out)
 
         model = keras.Model(inputs=inp, outputs=outputs)
 
-        # Simple MSE loss (equal weights)
-        loss_dict = {f'out_{i}': 'mse' for i in range(n_targets)}
-        metrics = {f'out_{i}': ['mae'] for i in range(n_targets)}
+        # Loss dengan variance penalty
+        loss_dict = {}
+        metrics_dict = {}
+        for i in range(n_targets):
+            loss_dict[f'out_{i}'] = 'mse'
+            metrics_dict[f'out_{i}'] = ['mae']
 
-        optimizer = keras.optimizers.Adam(learning_rate=lr)
-        model.compile(optimizer=optimizer, loss=loss_dict, metrics=metrics)
+        optimizer = keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0)
+        model.compile(optimizer=optimizer, loss=loss_dict, metrics=metrics_dict)
         return model
 
     model = build_simple_model((SEQUENCE_LENGTH, X_train_seq.shape[2]), len(target_cols), lr=5e-4)

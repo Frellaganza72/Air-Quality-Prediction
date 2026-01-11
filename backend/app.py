@@ -450,19 +450,19 @@ def validate_required_services():
 @app.route('/')
 def home():
     return jsonify({
-        'app': 'Air Quality Prediction API - Kota Malang',
-        'version': '2.0.0',
-        'models': {
-            'decision_tree': dt_model is not None,
-            'cnn': cnn_model is not None,
-            'lstm': lstm_model is not None
-        },
-        'endpoints': [
-            '/api/dashboard',
-            '/api/recommendations',
-            '/api/history',
-            '/api/anomalies'
-        ]
+        "app": "Air Quality Prediction API - Kota Malang",
+        "version": "2.0.0",
+        "endpoints": [
+            "/api/dashboard",
+            "/api/recommendations",
+            "/api/history",
+            "/api/anomalies"
+        ],
+        "models": {
+            "cnn": cnn_model is not None,
+            "decision_tree": dt_model is not None,
+            "lstm": lstm_model is not None
+        }
     })
 
 # ----------------------------------------------------------------------------
@@ -480,17 +480,13 @@ def dashboard():
         try:
             if date_str:
                 target_date = pd.to_datetime(date_str)
-            elif test_df is not None and not test_df.empty and 'tanggal' in test_df.columns:
-                target_date = pd.to_datetime(test_df['tanggal'].max())
-            elif train_df is not None and not train_df.empty and 'tanggal' in train_df.columns:
-                target_date = pd.to_datetime(train_df['tanggal'].max())
-            elif val_df is not None and not val_df.empty and 'tanggal' in val_df.columns:
-                target_date = pd.to_datetime(val_df['tanggal'].max())
             else:
-                # Fallback: gunakan tanggal hari ini
+                # DASHBOARD: Tampilkan PREDIKSI untuk HARI INI (atau tanggal yang diminta)
+                # Input data diambil dari kemarin (yang sudah ter-aggregate lengkap)
+                # Output prediksi untuk hari ini
                 from datetime import date as dt_date
                 target_date = pd.to_datetime(dt_date.today())
-                print("⚠️ No data found, using today's date as fallback")
+                print(f"ℹ️ Dashboard showing prediction for today: {target_date.strftime('%Y-%m-%d')}")
         except Exception as e:
             print(f"⚠️ Error determining target_date: {e}, using today")
             from datetime import date as dt_date
@@ -501,14 +497,33 @@ def dashboard():
             return jsonify({'status': 'error', 'message': 'Data loader not initialized'}), 500
         
         data_today = data_loader.get_data_for_date(target_date)
+        
+        # If data not found for requested date, try to use latest available data
+        if data_today is None:
+            print(f"⚠️ Data not found for {target_date.strftime('%Y-%m-%d')}, trying latest available...")
+            try:
+                import sqlite3
+                db_path = os.path.join(data_loader.data_dir, 'datacrawler.db')
+                if os.path.exists(db_path):
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT MAX(tanggal) FROM polutan")
+                    result = cursor.fetchone()
+                    conn.close()
+                    
+                    if result and result[0]:
+                        latest_date = pd.to_datetime(result[0])
+                        print(f"   Found latest date in DB: {latest_date.strftime('%Y-%m-%d')}")
+                        data_today = data_loader.get_data_for_date(latest_date)
+            except Exception as e:
+                print(f"⚠️ Error finding latest date: {e}")
+        
         if data_today is None:
             return jsonify({
                 'status': 'error', 
                 'message': f'Data not found for date {target_date.strftime("%Y-%m-%d")}',
                 'suggested_date': target_date.strftime('%Y-%m-%d')
-            }), 404
-
-        # Predict with all 3 models (with error handling)
+            }), 404        # Predict with all 3 models (with error handling)
         try:
             dt_pred = prediction_engine.predict_dt(data_today)
         except Exception as e:
@@ -614,6 +629,7 @@ def dashboard():
 
         return jsonify({
             'status': 'success',
+            'date': target_date.strftime('%Y-%m-%d'),
             'timestamp': target_date.strftime('%Y-%m-%d'),
             'primary_model': 'cnn',
             'predictions': {
@@ -621,19 +637,34 @@ def dashboard():
                     'pm25': round(dt_pred.get('pm25', 0), 2),
                     'o3': round(dt_pred.get('o3', 0), 2),
                     'co': round(dt_pred.get('co', 0), 2),
-                    'ispu': ispu_dt.get('overall', 'SEDANG')
+                    'ispu': ispu_dt.get('overall', 'SEDANG'),
+                    'ispu_individual': {
+                        'pm25': ispu_dt.get('pm25', 'SEDANG'),
+                        'o3': ispu_dt.get('o3', 'SEDANG'),
+                        'co': ispu_dt.get('co', 'SEDANG')
+                    }
                 },
                 'lstm': {
                     'pm25': round(lstm_pred.get('pm25', 0), 2),
                     'o3': round(lstm_pred.get('o3', 0), 2),
                     'co': round(lstm_pred.get('co', 0), 2),
-                    'ispu': ispu_lstm.get('overall', 'SEDANG')
+                    'ispu': ispu_lstm.get('overall', 'SEDANG'),
+                    'ispu_individual': {
+                        'pm25': ispu_lstm.get('pm25', 'SEDANG'),
+                        'o3': ispu_lstm.get('o3', 'SEDANG'),
+                        'co': ispu_lstm.get('co', 'SEDANG')
+                    }
                 },
                 'cnn': {
                     'pm25': round(cnn_pred.get('pm25', 0), 2),
                     'o3': round(cnn_pred.get('o3', 0), 2),
                     'co': round(cnn_pred.get('co', 0), 2),
-                    'ispu': ispu_cnn.get('overall', 'SEDANG')
+                    'ispu': ispu_cnn.get('overall', 'SEDANG'),
+                    'ispu_individual': {
+                        'pm25': ispu_cnn.get('pm25', 'SEDANG'),
+                        'o3': ispu_cnn.get('o3', 'SEDANG'),
+                        'co': ispu_cnn.get('co', 'SEDANG')
+                    }
                 }
             },
             'trend': {

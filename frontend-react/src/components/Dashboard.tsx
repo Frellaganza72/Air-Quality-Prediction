@@ -88,7 +88,6 @@ type DashboardResponse = {
 export default function Dashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Default to today's date in YYYY-MM-DD format
     const today = new Date();
     return today.toISOString().split('T')[0];
   });
@@ -460,28 +459,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Warning Banner */}
-        {ispuPrimaryCategory !== "Baik" && ispuPrimaryCategory !== "Sedang" && (
-          <div
-            style={{
-              background: "linear-gradient(135deg, #f97316 0%, #ea580c 100%)",
-              color: "white",
-              padding: "12px 16px",
-              borderRadius: 12,
-              marginBottom: 20,
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              boxShadow: "0 4px 12px rgba(249, 115, 22, 0.3)",
-            }}
-          >
-            <span style={{ fontSize: 20 }}>⚠️</span>
-            <div>
-              <strong>Peringatan!</strong> {worst.pollutant} terburuk menurut ISPU: <strong>{worst.label}</strong>
-            </div>
-          </div>
-        )}
-
         {/* Main Grid */}
         <div
           style={{
@@ -507,7 +484,7 @@ export default function Dashboard() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "#666" }}>PM2.5</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <strong style={{ fontSize: 20, color: ispuColorMap[ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.pm25.toFixed(1)}</strong>
+                  <strong style={{ fontSize: 20, color: ispuColorMap[(primaryPredictions as any).ispu_individual?.pm25 || ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.pm25.toFixed(1)}</strong>
                   <span style={{ fontSize: 14, color: "#666" }}>µg/m³</span>
                 </div>
               </div>
@@ -518,7 +495,7 @@ export default function Dashboard() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "#666" }}>O₃</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <strong style={{ fontSize: 20, color: ispuColorMap[ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.o3.toFixed(1)}</strong>
+                  <strong style={{ fontSize: 20, color: ispuColorMap[(primaryPredictions as any).ispu_individual?.o3 || ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.o3.toFixed(1)}</strong>
                   <span style={{ fontSize: 14, color: "#666" }}>µg/m³</span>
                 </div>
               </div>
@@ -529,7 +506,7 @@ export default function Dashboard() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "#666" }}>CO</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <strong style={{ fontSize: 20, color: ispuColorMap[ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.co.toFixed(1)}</strong>
+                  <strong style={{ fontSize: 20, color: ispuColorMap[(primaryPredictions as any).ispu_individual?.co || ispuPrimaryCategory] || "#ef4444" }}>{primaryPredictions.co.toFixed(1)}</strong>
                   <span style={{ fontSize: 14, color: "#666" }}>µg/m³</span>
                 </div>
               </div>

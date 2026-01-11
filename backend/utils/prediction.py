@@ -469,24 +469,24 @@ class PredictionEngine:
     def _clip_reasonable(self, pollutant, value, data=None):
         """
         Clip to reasonable range based on history or hard defaults.
-        For CNN: Allow higher extrapolation when input pollution is high.
+        IMPROVED: More lenient upper limits untuk lebih banyak variasi output
+        dan lebih mirip dengan data BMKG yang lebih bervariasi.
         """
         try:
             if pollutant == 'pm25':
                 hist = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
-                # Base upper limit: max(80, hist*5)
-                upper = max(80.0, float(hist) * 5.0)
+                # INCREASED: Changed from max(80, hist*5) to max(150, hist*8)
+                # Ini memungkinkan model memprediksi range yang lebih luas
+                upper = max(150.0, float(hist) * 8.0)
                 
-                # CNN Extrapolation: If input PM2.5 is significantly higher than history,
-                # allow model to predict proportionally higher
+                # Extrapolation boost: Allow even higher predictions if input is high
                 if data is not None:
                     try:
                         input_pm25 = float(data.get('pm2_5 (μg/m³)_mean', hist))
-                        # If input is 1.5x historical or more, amplify upper limit
-                        if input_pm25 > hist * 1.5:
+                        # More generous amplification: up to 3.5x (dari 2.5x)
+                        if input_pm25 > hist * 1.2:  # trigger lebih sensitif
                             ratio = input_pm25 / max(hist, 1.0)
-                            # Amplify upper limit based on input ratio (capped at 2.5x)
-                            amplification = min(ratio, 2.5)
+                            amplification = min(ratio, 3.5)
                             upper = upper * amplification
                     except:
                         pass
@@ -495,15 +495,16 @@ class PredictionEngine:
             
             if pollutant == 'co':
                 hist = self._get_history_value('carbon_monoxide (μg/m³)_mean', default=800.0)
-                upper = max(1500.0, float(hist) * 5.0)
+                # INCREASED: Changed from max(1500, hist*5) to max(2500, hist*8)
+                upper = max(2500.0, float(hist) * 8.0)
                 
-                # Similar extrapolation for CO
+                # Extrapolation boost
                 if data is not None:
                     try:
                         input_co = float(data.get('carbon_monoxide (μg/m³)_mean', hist))
-                        if input_co > hist * 1.5:
+                        if input_co > hist * 1.2:
                             ratio = input_co / max(hist, 1.0)
-                            amplification = min(ratio, 2.5)
+                            amplification = min(ratio, 3.5)
                             upper = upper * amplification
                     except:
                         pass
@@ -512,15 +513,16 @@ class PredictionEngine:
             
             if pollutant == 'o3':
                 hist = self._get_history_value('ozone (μg/m³)_mean', default=120.0)
-                upper = max(200.0, float(hist) * 5.0)
+                # INCREASED: Changed from max(200, hist*5) to max(300, hist*8)
+                upper = max(300.0, float(hist) * 8.0)
                 
-                # Similar extrapolation for O3
+                # Extrapolation boost
                 if data is not None:
                     try:
                         input_o3 = float(data.get('ozone (μg/m³)_mean', hist))
-                        if input_o3 > hist * 1.5:
+                        if input_o3 > hist * 1.2:
                             ratio = input_o3 / max(hist, 1.0)
-                            amplification = min(ratio, 2.5)
+                            amplification = min(ratio, 3.5)
                             upper = upper * amplification
                     except:
                         pass
@@ -872,15 +874,15 @@ class PredictionEngine:
                 input_for_model = grid
 
         model_input = np.expand_dims(input_for_model, axis=0)
+        pm25_val = None
+        o3_val = None
+        co_val = None
+        
         try:
             pred = self.cnn_model.predict(model_input, verbose=0)
             # CNN model returns [reg_out, heatmap_out]
             # reg_out shape: (1, 3) -> [PM2.5, O3, CO]
             # heatmap_out shape: (1, 15, 15, 3) -> spatial heatmap
-            
-            pm25_val = None
-            o3_val = None
-            co_val = None
             
             if isinstance(pred, (list, tuple)) and len(pred) >= 2:
                 # Multi-head output: [regression_output, heatmap_output]
@@ -899,22 +901,40 @@ class PredictionEngine:
                 pm25_val = float(arr.ravel()[0]) if arr.size > 0 else None
                 
         except Exception as e:
-            print(f"[CNN ERROR] {e}")
+            print(f"[CNN] Model prediction failed: {e}")
             pm25_val = None
             o3_val = None
             co_val = None
 
-        # Handle cases where model output is incomplete or negative (fallback to input data)
-        if pm25_val is None or pm25_val < 0:
-            pm25_val = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
+        # =========================================================================
+        # VALIDATION: Check if model output is reasonable
+        # If model outputs are very negative or extremely large, use fallback
+        # =========================================================================
+        model_output_valid = True
         
+        # Check if values are invalid (NaN, very negative, or extremely large)
+        if (pm25_val is None or np.isnan(pm25_val) or pm25_val < -100 or pm25_val > 500):
+            model_output_valid = False
+        if (o3_val is not None and (np.isnan(o3_val) or o3_val < -100 or o3_val > 300)):
+            o3_val = None
+        if (co_val is not None and (np.isnan(co_val) or co_val < -100 or co_val > 5000)):
+            co_val = None
+        
+        # Use fallback if model output is invalid
+        if not model_output_valid:
+            hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
+            current_pm25 = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
+            # CNN uses spatial smoothing: 60% history + 40% current (different from DT)
+            pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25
+        
+        # Only apply inverse transform if model output looks reasonable (after range check)
         # CNN model outputs are in SCALED space and need inverse transform
         # Use the cnn_y_scaler (output scaler specific to CNN)
-        if self.cnn_y_scaler is not None:
+        elif self.cnn_y_scaler is not None and pm25_val is not None:
             # cnn_y_scaler expects all 3 outputs: [PM2.5, O3, CO]
             # NOTE: CO is log1p transformed in training, so needs special handling
             try:
-                if pm25_val is not None and o3_val is not None and co_val is not None:
+                if o3_val is not None and co_val is not None:
                     # Inverse transform all 3 together
                     scaled_vals = np.array([[pm25_val, o3_val, co_val]])
                     inverse = self.cnn_y_scaler.inverse_transform(scaled_vals)
@@ -923,16 +943,15 @@ class PredictionEngine:
                     co_val_unlogged = float(inverse[0][2])
                     
                     # Check if inverse transform produced reasonable values
-                    # If values are very negative or NaN, keep original or use fallback
-                    if pm25_val_inv > 1.0 and not np.isnan(pm25_val_inv):
+                    if pm25_val_inv > 1.0 and pm25_val_inv < 500 and not np.isnan(pm25_val_inv):
                         pm25_val = pm25_val_inv
                     else:
-                        # Inverse transform gave bad value, use CNN spatial smoothing (not just input)
+                        # Inverse transform gave bad value, use CNN spatial smoothing
                         hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
                         current_pm25 = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
-                        pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25  # Blend with history
+                        pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25
                     
-                    if o3_val_inv > 1.0 and not np.isnan(o3_val_inv):
+                    if o3_val_inv > 1.0 and o3_val_inv < 300 and not np.isnan(o3_val_inv):
                         o3_val = o3_val_inv
                     else:
                         o3_val = None  # Will use regressor
@@ -940,31 +959,27 @@ class PredictionEngine:
                     # CO was log1p transformed during training, so reverse it
                     if not np.isnan(co_val_unlogged) and co_val_unlogged > -1.0:
                         co_val_candidate = float(np.expm1(co_val_unlogged))
-                        if co_val_candidate > 1.0:
+                        if co_val_candidate > 1.0 and co_val_candidate < 5000:
                             co_val = co_val_candidate
                         else:
                             co_val = None  # Will use regressor
-            except Exception as e:
+            except Exception:
                 # If inverse transform fails completely, use fallback
-                print(f"[CNN WARNING] Inverse transform failed: {e}, using spatial smoothing fallback")
-                # CNN spatial approach: blend history with current (not just use current)
                 hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
                 current_pm25 = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
-                # CNN uses spatial smoothing: 60% history + 40% current (different from DT)
                 pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25
                 o3_val = None
                 co_val = None
-        elif self.y_scaler is not None and isinstance(self.y_scaler, dict):
+        elif self.y_scaler is not None and isinstance(self.y_scaler, dict) and pm25_val is not None:
             # Fallback: use GRU y_scaler if CNN y_scaler not available
             try:
-                if "pm2_5 (μg/m³)_mean" in self.y_scaler and pm25_val is not None:
+                if "pm2_5 (μg/m³)_mean" in self.y_scaler:
                     scaler = self.y_scaler["pm2_5 (μg/m³)_mean"]
                     arr = np.array([[pm25_val]])
                     pm25_val_inv = float(scaler.inverse_transform(arr).ravel()[0])
-                    if pm25_val_inv > 1.0:
+                    if pm25_val_inv > 1.0 and pm25_val_inv < 500:
                         pm25_val = pm25_val_inv
                     else:
-                        # Fallback to spatial smoothing (not just input data)
                         hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
                         current_pm25 = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
                         pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25
@@ -973,7 +988,7 @@ class PredictionEngine:
                     scaler = self.y_scaler["ozone (μg/m³)_mean"]
                     arr = np.array([[o3_val]])
                     o3_val_inv = float(scaler.inverse_transform(arr).ravel()[0])
-                    if o3_val_inv > 1.0:
+                    if o3_val_inv > 1.0 and o3_val_inv < 300:
                         o3_val = o3_val_inv
                     else:
                         o3_val = None
@@ -985,40 +1000,16 @@ class PredictionEngine:
                     # CO was log1p transformed during training, so reverse it
                     if co_val_unlogged > -1.0:
                         co_val_candidate = float(np.expm1(co_val_unlogged))
-                        if co_val_candidate > 1.0:
+                        if co_val_candidate > 1.0 and co_val_candidate < 5000:
                             co_val = co_val_candidate
                         else:
                             co_val = None
-            except Exception as e:
-                print(f"[CNN WARNING] GRU scaler fallback failed: {e}")
-                # CNN spatial approach: blend history with current (not just use current)
+            except Exception:
                 hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
                 current_pm25 = float(data.get('pm2_5 (μg/m³)_mean', 25.0))
-                # CNN uses spatial smoothing: 60% history + 40% current (different from DT)
                 pm25_val = 0.6 * hist_pm25 + 0.4 * current_pm25
                 o3_val = None
                 co_val = None
-        
-        # =========================
-        # CNN OUTPUT AMPLIFICATION
-        # =========================
-        # CNN trained on max PM2.5 of 85, so it naturally stays conservative
-        # Amplify output based on input pollution levels to cover high ISPU ranges
-        try:
-            hist_pm25 = self._get_history_value('pm2_5 (μg/m³)_mean', default=25.0)
-            input_pm25 = float(data.get('pm2_5 (μg/m³)_mean', hist_pm25))
-            
-            # If input is significantly above history, amplify predictions
-            if input_pm25 > hist_pm25 * 1.2:
-                # Amplification factor: scale by input ratio (max 2.0x)
-                amplification = min(input_pm25 / max(hist_pm25, 1.0), 2.0)
-                pm25_val = pm25_val * amplification
-                if o3_val is not None:
-                    o3_val = o3_val * amplification
-                if co_val is not None:
-                    co_val = co_val * amplification
-        except Exception:
-            pass
         
         # Clip to reasonable ranges
         pm25_val = self._clip_reasonable('pm25', pm25_val, data=data)
@@ -1031,7 +1022,6 @@ class PredictionEngine:
         else:
             # Model output invalid or too small (likely from negative inverse transform)
             # Use quick regressors for O3/CO with CNN-specific approach
-            print(f"[CNN DEBUG] O3/CO values invalid: o3={o3_val}, co={co_val}, using regressors")
             try:
                 # Use a slightly different feature set or weighting for CNN
                 feat_vals = []
@@ -1051,8 +1041,16 @@ class PredictionEngine:
                     hist_o3 = self._get_history_value('ozone (μg/m³)_mean', default=60.0)
                     hist_co = self._get_history_value('carbon_monoxide (μg/m³)_mean', default=400.0)
                     
-                    o3_val = 0.6 * o3_base + 0.4 * hist_o3
-                    co_val = 0.6 * co_base + 0.4 * hist_co
+                    # If regressor gives negative value, use pure history instead
+                    if o3_base > 0:
+                        o3_val = 0.6 * o3_base + 0.4 * hist_o3
+                    else:
+                        o3_val = hist_o3
+                    
+                    if co_base > 0:
+                        co_val = 0.6 * co_base + 0.4 * hist_co
+                    else:
+                        co_val = hist_co
                 else:
                     o3_val = self._get_history_value('ozone (μg/m³)_mean', default=60.0)
                     co_val = self._get_history_value('carbon_monoxide (μg/m³)_mean', default=400.0)
@@ -1060,8 +1058,8 @@ class PredictionEngine:
                 o3_val = self._get_history_value('ozone (μg/m³)_mean', default=60.0)
                 co_val = self._get_history_value('carbon_monoxide (μg/m³)_mean', default=400.0)
             
-            o3_val = self._clip_reasonable('o3', o3_val)
-            co_val = self._clip_reasonable('co', co_val)
+            o3_val = self._clip_reasonable('o3', o3_val, data=data)
+            co_val = self._clip_reasonable('co', co_val, data=data)
 
         # Apply temporal modulation for day-to-day variation (tuned to match BMKG range)
         # Using mild daily variation + minimal monthly seasonal pattern

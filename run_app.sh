@@ -19,25 +19,31 @@ echo "==================================================="
 echo "   Air Quality Monitoring System - Run Script"
 echo "==================================================="
 
+# Activate conda environment
+echo "🔧 Activating conda environment 'airq'..."
+eval "$(conda shell.bash hook)"
+conda activate airq
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to activate conda environment 'airq'"
+    exit 1
+fi
+echo "✅ Conda environment 'airq' activated"
+
 # Check for Python dependencies
 echo "🔍 Checking Python dependencies..."
-python3 "$PROJECT_ROOT/backend/check_deps.py"
+echo "📦 Installing requirements from backend/requirements.txt..."
+# Clear pip cache and upgrade pip/setuptools first
+pip3 install --upgrade pip setuptools wheel --quiet
+pip3 install -r "$PROJECT_ROOT/backend/requirements.txt" --no-cache-dir --retries 5
 if [ $? -ne 0 ]; then
-    echo "⚠️  Dependencies missing or incomplete."
-    echo "📦 Installing requirements from backend/requirements.txt..."
-    pip3 install -r "$PROJECT_ROOT/backend/requirements.txt"
+    echo "❌ Failed to install dependencies. Please check your python environment."
+    echo "💡 Trying alternative installation method..."
+    pip3 install -r "$PROJECT_ROOT/backend/requirements.txt" --retries 5
     if [ $? -ne 0 ]; then
-        echo "❌ Failed to install dependencies. Please check your python environment."
-        exit 1
-    fi
-    
-    # Re-check to confirm
-    python3 "$PROJECT_ROOT/backend/check_deps.py"
-    if [ $? -ne 0 ]; then
-        echo "❌ Still missing dependencies after installation. Please check manually."
         exit 1
     fi
 fi
+echo "✅ Dependencies checked and installed"
 
 # Start Backend
 echo "🚀 Starting Backend (Port 2000)..."

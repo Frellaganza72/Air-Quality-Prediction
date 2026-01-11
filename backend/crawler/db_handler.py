@@ -16,67 +16,103 @@ DB_PATH = Path(__file__).resolve().parents[1] / "data" / "datacrawler.db"
 
 def init_database():
     """
-    Inisialisasi database dan buat tabel jika belum ada.
+    Inisialisasi database dan buat tabel jika belum ada (dengan schema DAILY AGGREGATION).
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Tabel polutan
+    # Tabel polutan - DAILY AGGREGATION (mean, max, min, median per hari)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS polutan (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            waktu TIMESTAMP NOT NULL,
-            pm10 REAL,
-            pm2_5 REAL,
-            ozone REAL,
-            carbon_monoxide REAL,
-            tanggal DATE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(waktu, tanggal)
+            tanggal DATE UNIQUE NOT NULL,
+            
+            -- PM10 statistics
+            pm10_mean REAL,
+            pm10_max REAL,
+            pm10_min REAL,
+            pm10_median REAL,
+            
+            -- PM2.5 statistics
+            pm2_5_mean REAL,
+            pm2_5_max REAL,
+            pm2_5_min REAL,
+            pm2_5_median REAL,
+            
+            -- Ozone statistics
+            ozone_mean REAL,
+            ozone_max REAL,
+            ozone_min REAL,
+            ozone_median REAL,
+            
+            -- Carbon Monoxide statistics
+            carbon_monoxide_mean REAL,
+            carbon_monoxide_max REAL,
+            carbon_monoxide_min REAL,
+            carbon_monoxide_median REAL,
+            
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # Tabel cuaca
+    # Tabel cuaca - DAILY AGGREGATION dengan statistik per hari
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS cuaca (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            datetime TIMESTAMP NOT NULL,
-            name TEXT,
-            temp REAL,
-            feelslike REAL,
-            dew REAL,
-            humidity REAL,
-            precip REAL,
-            precipprob REAL,
-            preciptype TEXT,
-            snow REAL,
-            snowdepth REAL,
-            windgust REAL,
-            windspeed REAL,
-            winddir REAL,
-            sealevelpressure REAL,
-            cloudcover REAL,
-            visibility REAL,
-            solarradiation REAL,
-            solarenergy REAL,
-            uvindex REAL,
-            severerisk REAL,
+            tanggal DATE UNIQUE NOT NULL,
+            datetime TEXT,
+            
+            -- Temperature statistics
+            temp_mean REAL,
+            temp_max REAL,
+            tempmax REAL,
+            tempmin REAL,
+            
+            -- Feels like statistics
+            feelslike_mean REAL,
+            feelslike_max REAL,
+            
+            -- Humidity statistics
+            humidity_mean REAL,
+            humidity_max REAL,
+            
+            -- Wind speed statistics
+            windspeed_mean REAL,
+            windspeed_max REAL,
+            winddir_mean REAL,
+            
+            -- Pressure statistics
+            sealevelpressure_mean REAL,
+            sealevelpressure_max REAL,
+            
+            -- Cloud cover statistics
+            cloudcover_mean REAL,
+            cloudcover_max REAL,
+            
+            -- Visibility statistics
+            visibility_mean REAL,
+            visibility_max REAL,
+            
+            -- Solar radiation statistics
+            solarradiation_mean REAL,
+            solarradiation_max REAL,
+            
+            -- Other weather data
             conditions TEXT,
             icon TEXT,
-            stations TEXT,
-            tanggal DATE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(datetime, tanggal)
+            precip REAL,
+            precipprob REAL,
+            snow REAL,
+            
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
     # Create indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_polutan_tanggal ON polutan(tanggal)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_polutan_waktu ON polutan(waktu)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuaca_tanggal ON cuaca(tanggal)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuaca_datetime ON cuaca(datetime)")
     
     conn.commit()
     conn.close()
@@ -85,8 +121,8 @@ def init_database():
 
 def get_history_data(limit: int = 30):
     """
-    Mengambil data riwayat polutan dari master dataset (bukan dari SQLite yang outdated).
-    Mengambil data aktual harian hingga kemarin saja.
+    Mengambil data riwayat polutan dari database SQLite (aggregated daily data).
+    Mengambil data aktual harian hingga kemarin saja (exclude hari ini).
     
     Args:
         limit: Jumlah hari terakhir yang diambil (exclude hari ini)
@@ -95,54 +131,45 @@ def get_history_data(limit: int = 30):
         List of dictionaries berisi tanggal dan rata-rata polutan (hanya data kemarin ke belakang)
     """
     try:
-        # Gunakan master dataset alih-alih SQLite (lebih reliable dan selalu updated)
-        preprocessed_path = DB_PATH.parent / 'dataset_preprocessed' / 'dataset_preprocessed.csv'
+        from datetime import date as dt_date, timedelta
         
-        if not preprocessed_path.exists():
-            logger.warning(f"Master dataset not found at {preprocessed_path}")
-            return []
+        # Query dari SQLite database (aggregated daily data)
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
         
-        # Load master dataset
-        df = pd.read_csv(preprocessed_path)
+        # Calculate yesterday's date (exclude today since it's not complete yet)
+        today = dt_date.today()
         
-        if df.empty or 'tanggal' not in df.columns:
-            logger.warning("Master dataset kosong atau tidak punya kolom 'tanggal'")
-            return []
+        # Query untuk last N days BEFORE today (complete days only)
+        cursor.execute(f"""
+            SELECT tanggal, pm2_5_mean, ozone_mean, carbon_monoxide_mean
+            FROM polutan
+            WHERE tanggal < ?
+            ORDER BY tanggal DESC
+            LIMIT ?
+        """, (today.strftime('%Y-%m-%d'), limit))
         
-        # Convert tanggal ke datetime
-        df['tanggal'] = pd.to_datetime(df['tanggal'])
-        today = pd.to_datetime(date.today())
+        rows = cursor.fetchall()
+        conn.close()
         
-        # Filter: hanya data sebelum hari ini (exclude prediksi hari ini)
-        df_history = df[df['tanggal'] < today].copy()
-        
-        if df_history.empty:
+        if not rows:
             logger.warning(f"Tidak ada history data sebelum {today.strftime('%Y-%m-%d')}")
             return []
         
-        # Sort descending dan ambil limit hari
-        df_history = df_history.sort_values('tanggal', ascending=False).head(limit)
-        
-        # Extract columns
+        # Convert to list of dictionaries (already sorted DESC from query)
         results = []
-        for _, row in df_history.iterrows():
-            # Handle columns yang mungkin punya nama berbeda
-            pm25_val = row.get('pm2_5 (μg/m³)_mean') or row.get('pm25') or 0
-            o3_val = row.get('ozone (μg/m³)_mean') or row.get('o3') or 0
-            co_val = row.get('carbon_monoxide (μg/m³)_mean') or row.get('co') or 0
-            
+        for tanggal, pm25, o3, co in rows:
             results.append({
-                'date': row['tanggal'].strftime('%Y-%m-%d'),
-                'pm25': float(pm25_val),
-                'o3': float(o3_val),
-                'co': float(co_val)
+                'date': tanggal,
+                'pm25': float(pm25) if pm25 is not None else 0,
+                'o3': float(o3) if o3 is not None else 0,
+                'co': float(co) if co is not None else 0
             })
         
-        # Return results (already sorted DESC from query)
         return results
         
     except Exception as e:
-        logger.error(f"Error fetching history from master dataset: {e}")
+        logger.error(f"Error fetching history from database: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -150,11 +177,12 @@ def get_history_data(limit: int = 30):
 
 def save_to_database(df_polut: pd.DataFrame = None, df_cuaca: pd.DataFrame = None, target_date: date = None):
     """
-    Menyimpan data polutan dan cuaca ke database.
+    Menyimpan data polutan dan cuaca ke database (AGGREGATED - 1 record per hari).
+    Data sekarang sudah di-aggregate ke daily (mean, min, max) dari hourly.
     
     Args:
-        df_polut: DataFrame data polutan
-        df_cuaca: DataFrame data cuaca
+        df_polut: DataFrame data polutan aggregate (1 row per day)
+        df_cuaca: DataFrame data cuaca aggregate (1 row per day)
         target_date: Tanggal target (default: hari ini)
     """
     if target_date is None:
@@ -166,94 +194,109 @@ def save_to_database(df_polut: pd.DataFrame = None, df_cuaca: pd.DataFrame = Non
     conn = sqlite3.connect(DB_PATH)
     
     try:
-        # Save polutan
+        # Save polutan (now aggregated: 1 record per day)
         if df_polut is not None and not df_polut.empty:
-            # Rename kolom time menjadi waktu jika ada
             df_polut_db = df_polut.copy()
-            if 'time' in df_polut_db.columns:
-                df_polut_db = df_polut_db.rename(columns={'time': 'waktu'})
             
             # Tambahkan kolom tanggal
             df_polut_db['tanggal'] = target_date
             
-            # Pastikan kolom waktu adalah timestamp, lalu konversi ke string
-            if 'waktu' in df_polut_db.columns:
-                df_polut_db['waktu'] = pd.to_datetime(df_polut_db['waktu'])
-                # Konversi Timestamp ke string untuk SQLite
-                df_polut_db['waktu'] = df_polut_db['waktu'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Ambil 1 row (data sudah aggregate)
+            row = df_polut_db.iloc[0]
             
-            # Pilih kolom yang sesuai dengan tabel
-            cols_polut = ['waktu', 'pm10', 'pm2_5', 'ozone', 'carbon_monoxide', 'tanggal']
-            df_polut_db = df_polut_db[[c for c in cols_polut if c in df_polut_db.columns]]
-            
-            # Insert dengan OR IGNORE untuk menghindari duplicate
             cursor = conn.cursor()
-            for _, row in df_polut_db.iterrows():
-                try:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO polutan (waktu, pm10, pm2_5, ozone, carbon_monoxide, tanggal)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
-                        str(row['waktu']) if 'waktu' in row and pd.notna(row['waktu']) else None,
-                        float(row['pm10']) if 'pm10' in row and pd.notna(row['pm10']) else None,
-                        float(row['pm2_5']) if 'pm2_5' in row and pd.notna(row['pm2_5']) else None,
-                        float(row['ozone']) if 'ozone' in row and pd.notna(row['ozone']) else None,
-                        float(row['carbon_monoxide']) if 'carbon_monoxide' in row and pd.notna(row['carbon_monoxide']) else None,
-                        str(row['tanggal'])
-                    ))
-                except Exception as e:
-                    logger.warning(f"⚠️ Error inserting row: {e}")
-                    continue
-            conn.commit()
-            logger.info(f"✅ Saved {len(df_polut_db)} polutan records to database")
+            try:
+                # Valid columns untuk tabel polutan (sesuai schema baru)
+                valid_cols = {
+                    'tanggal', 
+                    'pm10_mean', 'pm10_max', 'pm10_min', 'pm10_median',
+                    'pm2_5_mean', 'pm2_5_max', 'pm2_5_min', 'pm2_5_median',
+                    'ozone_mean', 'ozone_max', 'ozone_min', 'ozone_median',
+                    'carbon_monoxide_mean', 'carbon_monoxide_max', 'carbon_monoxide_min', 'carbon_monoxide_median'
+                }
+                
+                # Filter hanya kolom yang valid
+                insert_cols = []
+                insert_vals = []
+                
+                for col in df_polut_db.columns:
+                    if col in valid_cols and pd.notna(row[col]):
+                        insert_cols.append(col)
+                        insert_vals.append(row[col])
+                
+                if insert_cols:
+                    cols_str = ','.join([f'"{c}"' for c in insert_cols])
+                    placeholders = ','.join(['?' for _ in insert_cols])
+                    
+                    cursor.execute(f"""
+                        INSERT OR REPLACE INTO polutan ({cols_str})
+                        VALUES ({placeholders})
+                    """, tuple(insert_vals))
+                    
+                    conn.commit()
+                    logger.info(f"✅ Saved 1 aggregated polutan record for {target_date}")
+                else:
+                    logger.warning(f"⚠️ No valid columns found for polutan")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error inserting polutan: {e}")
         
-        # Save cuaca
+        # Save cuaca (now aggregated: 1 record per day)
         if df_cuaca is not None and not df_cuaca.empty:
             df_cuaca_db = df_cuaca.copy()
             
             # Tambahkan kolom tanggal
             df_cuaca_db['tanggal'] = target_date
             
-            # Pastikan datetime adalah timestamp, lalu konversi ke string
-            if 'datetime' in df_cuaca_db.columns:
-                df_cuaca_db['datetime'] = pd.to_datetime(df_cuaca_db['datetime'])
-                # Konversi Timestamp ke string untuk SQLite
-                df_cuaca_db['datetime'] = df_cuaca_db['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Ambil 1 row (data sudah aggregate)
+            row = df_cuaca_db.iloc[0]
             
-            # Insert dengan OR IGNORE untuk menghindari duplicate
             cursor = conn.cursor()
-            cuaca_cols = [col for col in df_cuaca_db.columns]
-            
-            for _, row in df_cuaca_db.iterrows():
-                try:
-                    # Konversi semua nilai ke format yang didukung SQLite
-                    values = []
-                    for col in cuaca_cols:
+            try:
+                # Valid columns untuk tabel cuaca (sesuai schema baru)
+                valid_cols = {
+                    'tanggal', 'datetime',
+                    'temp_mean', 'temp_max', 'tempmax', 'tempmin',
+                    'feelslike_mean', 'feelslike_max',
+                    'humidity_mean', 'humidity_max',
+                    'windspeed_mean', 'windspeed_max', 'winddir_mean',
+                    'sealevelpressure_mean', 'sealevelpressure_max',
+                    'cloudcover_mean', 'cloudcover_max',
+                    'visibility_mean', 'visibility_max',
+                    'solarradiation_mean', 'solarradiation_max',
+                    'conditions', 'icon', 'precip', 'precipprob', 'snow'
+                }
+                
+                # Filter hanya kolom yang valid
+                insert_cols = []
+                insert_vals = []
+                
+                for col in df_cuaca_db.columns:
+                    if col in valid_cols and pd.notna(row[col]):
+                        insert_cols.append(col)
                         val = row[col]
-                        if pd.isna(val):
-                            values.append(None)
-                        elif isinstance(val, (pd.Timestamp, datetime)):
-                            values.append(val.strftime('%Y-%m-%d %H:%M:%S') if hasattr(val, 'strftime') else str(val))
-                        elif isinstance(val, (int, float)):
-                            values.append(float(val))
-                        else:
-                            values.append(str(val))
-                    
-                    cols_placeholders = ','.join(['?' for _ in cuaca_cols])
-                    cols_names = ','.join([f'"{col}"' for col in cuaca_cols])  # Quote column names
+                        # Convert datetime to string jika perlu
+                        if col == 'datetime':
+                            val = str(val)
+                        insert_vals.append(val)
+                
+                if insert_cols:
+                    cols_str = ','.join([f'"{c}"' for c in insert_cols])
+                    placeholders = ','.join(['?' for _ in insert_cols])
                     
                     cursor.execute(f"""
-                        INSERT OR IGNORE INTO cuaca ({cols_names})
-                        VALUES ({cols_placeholders})
-                    """, tuple(values))
-                except Exception as e:
-                    logger.warning(f"⚠️ Error inserting cuaca row: {e}")
-                    continue
-            conn.commit()
-            logger.info(f"✅ Saved {len(df_cuaca_db)} cuaca records to database")
-        
-        conn.commit()
-        
+                        INSERT OR REPLACE INTO cuaca ({cols_str})
+                        VALUES ({placeholders})
+                    """, tuple(insert_vals))
+                    
+                    conn.commit()
+                    logger.info(f"✅ Saved 1 aggregated cuaca record for {target_date}")
+                else:
+                    logger.warning(f"⚠️ No valid columns found for cuaca")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error inserting cuaca: {e}")
+    
     except Exception as e:
         conn.rollback()
         logger.error(f"❌ Error saving to database: {e}")
@@ -336,7 +379,11 @@ def get_data_from_db(table: str, start_date: date = None, end_date: date = None)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     
-    query += " ORDER BY tanggal, datetime" if table == 'cuaca' else " ORDER BY tanggal, waktu"
+    # ORDER BY logic: cuaca has datetime, polutan only has tanggal
+    if table == 'cuaca':
+        query += " ORDER BY tanggal, datetime"
+    else:
+        query += " ORDER BY tanggal"
     
     df = pd.read_sql_query(query, conn)
     conn.close()
@@ -402,14 +449,24 @@ def get_trend_data_from_db(days_back: int = 7):
         
         # Group by tanggal dan hitung rata-rata harian PM2.5
         df_polutan['date_only'] = df_polutan['tanggal'].dt.date
+        
+        # Use pm2_5_mean column (new schema)
+        if 'pm2_5_mean' in df_polutan.columns:
+            col_to_use = 'pm2_5_mean'
+        elif 'pm2_5' in df_polutan.columns:
+            col_to_use = 'pm2_5'
+        else:
+            logger.error("No PM2.5 column found in polutan data")
+            return []
+        
         daily_avg = df_polutan.groupby('date_only').agg({
-            'pm2_5': 'mean'
+            col_to_use: 'mean'
         }).reset_index()
         
         # Format untuk API response
         trend = []
         for _, row in daily_avg.iterrows():
-            pm25_value = float(row['pm2_5']) if pd.notna(row['pm2_5']) else 0.0
+            pm25_value = float(row[col_to_use]) if pd.notna(row[col_to_use]) else 0.0
             trend.append({
                 'date': str(row['date_only']),
                 'pm25': round(pm25_value, 2)
@@ -484,10 +541,24 @@ def get_ispu_statistics_from_db(days_back: int = 30):
         df_polutan['date_only'] = df_polutan['tanggal'].dt.date
         
         # Group by tanggal dan ambil nilai tertinggi per hari (sama seperti logika anomali)
+        # Use pm2_5_mean column (new schema)
+        if 'pm2_5_mean' in df_polutan.columns:
+            col_to_use = 'pm2_5_mean'
+        elif 'pm2_5' in df_polutan.columns:
+            col_to_use = 'pm2_5'
+        else:
+            logger.error("No PM2.5 column found")
+            return {
+                'categories': [],
+                'total_days': 0,
+                'total_hours': 0,
+                'date_range': {'start': str(start_date), 'end': str(end_date)}
+            }
+        
         daily_max = df_polutan.groupby('date_only').agg({
-            'pm2_5': 'max',
-            'ozone': 'max',
-            'carbon_monoxide': 'max'
+            col_to_use: 'max',
+            'ozone_mean': 'max' if 'ozone_mean' in df_polutan.columns else lambda x: 0,
+            'carbon_monoxide_mean': 'max' if 'carbon_monoxide_mean' in df_polutan.columns else lambda x: 0
         }).reset_index()
         
         # Inisialisasi ISPU classifier
@@ -503,9 +574,9 @@ def get_ispu_statistics_from_db(days_back: int = 30):
         }
         
         for _, row in daily_max.iterrows():
-            pm25 = float(row['pm2_5']) if pd.notna(row['pm2_5']) else 0.0
-            # o3 = float(row['ozone']) if pd.notna(row['ozone']) else 0.0
-            # co = float(row['carbon_monoxide']) if pd.notna(row['carbon_monoxide']) else 0.0
+            pm25 = float(row[col_to_use]) if pd.notna(row[col_to_use]) else 0.0
+            # o3 = float(row['ozone_mean']) if pd.notna(row['ozone_mean']) else 0.0
+            # co = float(row['carbon_monoxide_mean']) if pd.notna(row['carbon_monoxide_mean']) else 0.0
             
             # Klasifikasi berdasarkan PM2.5 SAJA
             pm25_category = ispu_classifier.classify_pm25(pm25)
@@ -724,222 +795,96 @@ def aggregate_hourly_to_daily(target_date: date = None):
         date_str = target_date.strftime("%Y-%m-%d")
         logger.info(f"[AGGREGATION] Aggregating hourly data untuk {date_str}")
         
-        # QUERY 1: Aggregate polutan table (PM2.5, O3, CO)
+        # QUERY 1: Aggregate polutan table (PM2.5, O3, CO) - menggunakan nama kolom baru
         cursor.execute("""
             SELECT 
-                pm2_5,
-                ozone,
-                carbon_monoxide
+                pm2_5_mean,
+                pm2_5_max,
+                pm2_5_min,
+                pm2_5_median,
+                ozone_mean,
+                ozone_max,
+                ozone_min,
+                ozone_median,
+                carbon_monoxide_mean,
+                carbon_monoxide_max,
+                carbon_monoxide_min,
+                carbon_monoxide_median
             FROM polutan
             WHERE tanggal = ?
-            ORDER BY waktu
         """, (date_str,))
         
-        polutan_rows = cursor.fetchall()
+        polutan_rows = cursor.fetchone()
         
         # QUERY 2: Aggregate cuaca table (temperature, humidity, wind, pressure, etc)
         cursor.execute("""
             SELECT 
-                temp,
-                humidity,
-                windspeed,
-                sealevelpressure,
-                cloudcover,
-                visibility,
-                solarradiation
+                temp_mean,
+                temp_max,
+                tempmax,
+                tempmin,
+                humidity_mean,
+                humidity_max,
+                windspeed_mean,
+                windspeed_max,
+                winddir_mean,
+                sealevelpressure_mean,
+                sealevelpressure_max,
+                cloudcover_mean,
+                cloudcover_max,
+                visibility_mean,
+                visibility_max,
+                solarradiation_mean,
+                solarradiation_max
             FROM cuaca
             WHERE tanggal = ?
-            ORDER BY datetime
         """, (date_str,))
         
-        cuaca_rows = cursor.fetchall()
+        cuaca_rows = cursor.fetchone()
         conn.close()
         
-        # Konversi ke DataFrame dengan column names
-        polutan_columns = ['pm2_5', 'ozone', 'carbon_monoxide']
-        cuaca_columns = ['temp', 'humidity', 'windspeed', 'sealevelpressure', 'cloudcover', 'visibility', 'solarradiation']
+        # Jika sudah ada data aggregated untuk hari ini, gunakan langsung
+        if polutan_rows is not None:
+            logger.info(f"[AGGREGATION] Data sudah aggregated untuk {date_str}, menggunakan data existing")
+            aggregation = {
+                'tanggal': date_str,
+                'pm2_5 (μg/m³)_mean': polutan_rows[0],
+                'pm2_5 (μg/m³)_max': polutan_rows[1],
+                'pm2_5 (μg/m³)_min': polutan_rows[2],
+                'pm2_5 (μg/m³)_median': polutan_rows[3],
+                'ozone (μg/m³)_mean': polutan_rows[4],
+                'ozone (μg/m³)_max': polutan_rows[5],
+                'ozone (μg/m³)_min': polutan_rows[6],
+                'ozone (μg/m³)_median': polutan_rows[7],
+                'carbon_monoxide (μg/m³)_mean': polutan_rows[8],
+                'carbon_monoxide (μg/m³)_max': polutan_rows[9],
+                'carbon_monoxide (μg/m³)_min': polutan_rows[10],
+                'carbon_monoxide (μg/m³)_median': polutan_rows[11],
+            }
+            
+            if cuaca_rows is not None:
+                aggregation.update({
+                    'temp': cuaca_rows[0] if cuaca_rows[0] is not None else cuaca_rows[1],
+                    'tempmax': cuaca_rows[2],
+                    'tempmin': cuaca_rows[3],
+                    'humidity': cuaca_rows[4] if cuaca_rows[4] is not None else cuaca_rows[5],
+                    'windspeed': cuaca_rows[6] if cuaca_rows[6] is not None else cuaca_rows[7],
+                    'winddir': cuaca_rows[8],
+                    'sealevelpressure': cuaca_rows[9] if cuaca_rows[9] is not None else cuaca_rows[10],
+                    'cloudcover': cuaca_rows[11] if cuaca_rows[11] is not None else cuaca_rows[12],
+                    'visibility': cuaca_rows[13] if cuaca_rows[13] is not None else cuaca_rows[14],
+                    'solarradiation': cuaca_rows[15] if cuaca_rows[15] is not None else cuaca_rows[16],
+                    'hourly_count': 24,
+                    'missing_hours': 0,
+                })
+            
+            return aggregation
         
-        df_polutan = pd.DataFrame(polutan_rows, columns=polutan_columns) if polutan_rows else pd.DataFrame()
-        df_cuaca = pd.DataFrame(cuaca_rows, columns=cuaca_columns) if cuaca_rows else pd.DataFrame()
-        
-        logger.info(f"[AGGREGATION] Polutan records: {len(df_polutan)}, Cuaca records: {len(df_cuaca)}")
-        
-        if df_polutan.empty and df_cuaca.empty:
-            logger.warning(f"[AGGREGATION] Tidak ada data untuk {date_str}")
-            return None
-        
-        # Initialize hasil agregasi
-        aggregation = {
-            'tanggal': date_str,
-            'hourly_count': max(len(df_polutan), len(df_cuaca)),
-            'missing_hours': 24 - max(len(df_polutan), len(df_cuaca)),
-        }
-        
-        # ---- AGGREGASI POLUTAN ----
-        # PM2.5
-        if not df_polutan.empty and 'pm2_5' in df_polutan.columns:
-            pm25_data = pd.to_numeric(df_polutan['pm2_5'], errors='coerce').dropna()
-            if len(pm25_data) > 0:
-                aggregation['pm2_5 (μg/m³)_mean'] = round(float(pm25_data.mean()), 2)
-                aggregation['pm2_5 (μg/m³)_max'] = round(float(pm25_data.max()), 2)
-                aggregation['pm2_5 (μg/m³)_median'] = round(float(pm25_data.median()), 2)
-                logger.info(f"   PM2.5: mean={aggregation['pm2_5 (μg/m³)_mean']}, max={aggregation['pm2_5 (μg/m³)_max']}")
-        
-        # Ozone
-        if not df_polutan.empty and 'ozone' in df_polutan.columns:
-            o3_data = pd.to_numeric(df_polutan['ozone'], errors='coerce').dropna()
-            if len(o3_data) > 0:
-                aggregation['ozone (μg/m³)_mean'] = round(float(o3_data.mean()), 2)
-                aggregation['ozone (μg/m³)_max'] = round(float(o3_data.max()), 2)
-                aggregation['ozone (μg/m³)_median'] = round(float(o3_data.median()), 2)
-                logger.info(f"   O3: mean={aggregation['ozone (μg/m³)_mean']}, max={aggregation['ozone (μg/m³)_max']}")
-        
-        # Carbon Monoxide
-        if not df_polutan.empty and 'carbon_monoxide' in df_polutan.columns:
-            co_data = pd.to_numeric(df_polutan['carbon_monoxide'], errors='coerce').dropna()
-            if len(co_data) > 0:
-                aggregation['carbon_monoxide (μg/m³)_mean'] = round(float(co_data.mean()), 2)
-                aggregation['carbon_monoxide (μg/m³)_max'] = round(float(co_data.max()), 2)
-                aggregation['carbon_monoxide (μg/m³)_median'] = round(float(co_data.median()), 2)
-                logger.info(f"   CO: mean={aggregation['carbon_monoxide (μg/m³)_mean']}, max={aggregation['carbon_monoxide (μg/m³)_max']}")
-        
-        # ---- AGGREGASI CUACA ----
-        # Temperature (normalized 0-1)
-        if not df_cuaca.empty and 'temp' in df_cuaca.columns:
-            temp_data = pd.to_numeric(df_cuaca['temp'], errors='coerce').dropna()
-            if len(temp_data) > 0:
-                temp_avg = float(temp_data.mean())
-                aggregation['temp'] = round(temp_avg / 100.0, 3)  # normalize to 0-1 range
-                aggregation['tempmax'] = round(float(temp_data.max()) / 100.0, 3)
-                aggregation['tempmin'] = round(float(temp_data.min()) / 100.0, 3)
-                logger.info(f"   Temp: avg={temp_avg}°C (normalized={aggregation['temp']})")
-        
-        # Humidity (0-1 range)
-        if not df_cuaca.empty and 'humidity' in df_cuaca.columns:
-            humidity_data = pd.to_numeric(df_cuaca['humidity'], errors='coerce').dropna()
-            if len(humidity_data) > 0:
-                humidity_avg = float(humidity_data.mean())
-                aggregation['humidity'] = round(humidity_avg / 100.0, 3)
-                logger.info(f"   Humidity: avg={humidity_avg}% (normalized={aggregation['humidity']})")
-        
-        # Wind Speed (0-1 range)
-        if not df_cuaca.empty and 'windspeed' in df_cuaca.columns:
-            windspeed_data = pd.to_numeric(df_cuaca['windspeed'], errors='coerce').dropna()
-            if len(windspeed_data) > 0:
-                windspeed_avg = float(windspeed_data.mean())
-                aggregation['windspeed'] = round(windspeed_avg / 50.0, 3)  # normalize by max typical
-                aggregation['winddir'] = round(float(windspeed_data.iloc[0] if len(windspeed_data) > 0 else 0) / 360.0, 3)
-                logger.info(f"   Wind Speed: avg={windspeed_avg} km/h (normalized={aggregation['windspeed']})")
-        
-        # Sea Level Pressure (0-1 range, typical 1000-1030 hPa)
-        if not df_cuaca.empty and 'sealevelpressure' in df_cuaca.columns:
-            pressure_data = pd.to_numeric(df_cuaca['sealevelpressure'], errors='coerce').dropna()
-            if len(pressure_data) > 0:
-                pressure_avg = float(pressure_data.mean())
-                aggregation['sealevelpressure'] = round((pressure_avg - 1000.0) / 100.0, 3)  # normalize
-                logger.info(f"   Pressure: avg={pressure_avg} hPa (normalized={aggregation['sealevelpressure']})")
-        
-        # Cloud Cover (0-1 range)
-        if not df_cuaca.empty and 'cloudcover' in df_cuaca.columns:
-            cloudcover_data = pd.to_numeric(df_cuaca['cloudcover'], errors='coerce').dropna()
-            if len(cloudcover_data) > 0:
-                cloudcover_avg = float(cloudcover_data.mean())
-                aggregation['cloudcover'] = round(cloudcover_avg / 100.0, 3)
-                logger.info(f"   Cloud Cover: avg={cloudcover_avg}% (normalized={aggregation['cloudcover']})")
-        
-        # Visibility (0-1 range, typical 0-20km)
-        if not df_cuaca.empty and 'visibility' in df_cuaca.columns:
-            visibility_data = pd.to_numeric(df_cuaca['visibility'], errors='coerce').dropna()
-            if len(visibility_data) > 0:
-                visibility_avg = float(visibility_data.mean())
-                aggregation['visibility'] = round(visibility_avg / 20.0, 3)
-                logger.info(f"   Visibility: avg={visibility_avg} km (normalized={aggregation['visibility']})")
-        
-        # Solar Radiation (0-1 range)
-        if not df_cuaca.empty and 'solarradiation' in df_cuaca.columns:
-            solar_data = pd.to_numeric(df_cuaca['solarradiation'], errors='coerce').dropna()
-            if len(solar_data) > 0:
-                solar_avg = float(solar_data.mean())
-                aggregation['solarradiation'] = round(solar_avg / 1000.0, 3)  # normalize
-                logger.info(f"   Solar Radiation: avg={solar_avg} W/m² (normalized={aggregation['solarradiation']})")
-        
-        logger.info("[AGGREGATION] ✅ Aggregation berhasil!")
-        return aggregation
-        
-    except Exception as e:
-        logger.error(f"[AGGREGATION] Error during aggregation: {e}", exc_info=True)
+        logger.warning(f"[AGGREGATION] Tidak ada aggregated data untuk {date_str} di database")
         return None
-
-
-def merge_aggregation_to_master_dataset(aggregation):
-    """
-    MERGE HASIL AGREGASI KE MASTER DATASET
-    
-    Merge 1 baris daily data agregasi ke dataset_preprocessed.csv untuk continuous learning.
-    Dataset ini akan digunakan untuk training setiap hari dengan data lama + data baru.
-    
-    Input: 
-        aggregation dict dari aggregate_hourly_to_daily()
-        
-    Output: 
-        Update/create dataset_preprocessed.csv dengan 1 baris baru
-        Return: True jika sukses, False jika skip/gagal
-    """
-    
-    try:
-        import numpy as np
-        
-        # Path ke master dataset (preprocessed)
-        master_file = Path(__file__).resolve().parents[1] / 'data' / 'dataset_preprocessed' / 'dataset_preprocessed.csv'
-        master_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        if aggregation is None:
-            logger.warning("[MERGE] Aggregation data is None, skip merge")
-            return False
-        
-        target_date_str = aggregation.get('tanggal')
-        
-        # Prepare row untuk dimasukkan ke master dataset
-        row = {
-            'tanggal': target_date_str,
-            'pm2_5 (μg/m³)_mean': aggregation.get('pm2_5 (μg/m³)_mean'),
-            'pm2_5 (μg/m³)_max': aggregation.get('pm2_5 (μg/m³)_max'),
-            'pm2_5 (μg/m³)_median': aggregation.get('pm2_5 (μg/m³)_median'),
-            'ozone (μg/m³)_mean': aggregation.get('ozone (μg/m³)_mean'),
-            'ozone (μg/m³)_max': aggregation.get('ozone (μg/m³)_max'),
-            'ozone (μg/m³)_median': aggregation.get('ozone (μg/m³)_median'),
-            'carbon_monoxide (μg/m³)_mean': aggregation.get('carbon_monoxide (μg/m³)_mean'),
-            'carbon_monoxide (μg/m³)_max': aggregation.get('carbon_monoxide (μg/m³)_max'),
-            'carbon_monoxide (μg/m³)_median': aggregation.get('carbon_monoxide (μg/m³)_median'),
-            'temp': aggregation.get('temp'),
-            'tempmax': aggregation.get('tempmax'),
-            'tempmin': aggregation.get('tempmin'),
-            'humidity': aggregation.get('humidity'),
-            'windspeed': aggregation.get('windspeed'),
-            'winddir': aggregation.get('winddir'),
-            'sealevelpressure': aggregation.get('sealevelpressure'),
-            'cloudcover': aggregation.get('cloudcover'),
-            'visibility': aggregation.get('visibility'),
-            'solarradiation': aggregation.get('solarradiation'),
-        }
-        
-        # Load atau create master dataset
-        if master_file.exists():
-            df_master = pd.read_csv(master_file)
-            logger.info(f"[MERGE] Loaded existing master dataset: {len(df_master)} rows")
-        else:
-            df_master = pd.DataFrame()
-            logger.info(f"[MERGE] Master dataset tidak ada, akan create baru")
-        
-        # Check jika sudah ada untuk hari ini (prevent duplicate)
-        if len(df_master) > 0 and 'tanggal' in df_master.columns:
-            existing = df_master[df_master['tanggal'] == target_date_str]
-            if len(existing) > 0:
-                logger.warning(f"[MERGE] Data untuk {target_date_str} sudah ada, skip merge")
-                return False
-        
-        # Append row baru
-        df_new = pd.concat([df_master, pd.DataFrame([row])], ignore_index=True)
+    except Exception as e:
+        logger.error(f"[AGGREGATION] Error: {e}", exc_info=True)
+        return None
         
         # Sort by tanggal agar urut chronologically (convert to datetime for proper sorting)
         if 'tanggal' in df_new.columns:
@@ -961,6 +906,93 @@ def merge_aggregation_to_master_dataset(aggregation):
         logger.info(f"   - PM2.5: {row.get('pm2_5 (μg/m³)_mean')} μg/m³")
         logger.info(f"   - O3: {row.get('ozone (μg/m³)_mean')} μg/m³")
         logger.info(f"   - CO: {row.get('carbon_monoxide (μg/m³)_mean')} μg/m³")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"[MERGE] Error merging to master dataset: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def merge_aggregation_to_master_dataset(aggregation_data: dict = None, target_date: date = None):
+    """
+    Merge aggregated daily data ke master dataset (dataset_preprocessed.csv)
+    
+    Args:
+        aggregation_data: dict dengan hasil aggregate_hourly_to_daily()
+        target_date: date object (jika None, gunakan yesterday)
+    
+    Returns:
+        bool: True jika merge sukses, False jika gagal
+    """
+    import pandas as pd
+    
+    try:
+        # Tentukan tanggal target
+        if target_date is None:
+            from datetime import timedelta
+            target_date = date.today() - timedelta(days=1)
+        
+        target_date_str = target_date.strftime('%Y-%m-%d')
+        
+        # Jika aggregation_data tidak diberikan, fetch dari database
+        if aggregation_data is None:
+            aggregation_data = aggregate_hourly_to_daily(target_date)
+            if aggregation_data is None:
+                logger.warning(f"[MERGE] Tidak ada aggregation data untuk {target_date_str}")
+                return False
+        
+        # Path ke master dataset
+        master_file = DB_PATH.parent.parent / "dataset_preprocessed" / "dataset_preprocessed.csv"
+        
+        if not master_file.exists():
+            logger.warning(f"[MERGE] Master dataset tidak ada di {master_file}")
+            logger.info("[MERGE] Creating new master dataset...")
+            
+            # Buat new master dataset dari aggregation data
+            df_new = pd.DataFrame([aggregation_data])
+            master_file.parent.mkdir(parents=True, exist_ok=True)
+            df_new.to_csv(master_file, index=False)
+            logger.info(f"[MERGE] ✅ Created master dataset with 1 row")
+            return True
+        
+        # Load existing master dataset
+        df_master = pd.read_csv(master_file)
+        
+        # Check if date already exists
+        if 'tanggal' in df_master.columns:
+            if target_date_str in df_master['tanggal'].values:
+                logger.info(f"[MERGE] Data untuk {target_date_str} sudah ada, skip merge")
+                return False
+        
+        # Prepare row untuk di-append
+        row = pd.DataFrame([aggregation_data])
+        
+        # Merge dengan existing data
+        df_new = pd.concat([df_master, row], ignore_index=True)
+        
+        # Sort by tanggal agar urut chronologically
+        if 'tanggal' in df_new.columns:
+            df_new['tanggal'] = pd.to_datetime(df_new['tanggal'], errors='coerce')
+            df_new = df_new.sort_values('tanggal', ascending=True).reset_index(drop=True)
+            df_new['tanggal'] = df_new['tanggal'].dt.strftime('%Y-%m-%d')
+        
+        # Drop duplicates (keep first occurrence)
+        if 'tanggal' in df_new.columns:
+            df_new = df_new.drop_duplicates(subset=['tanggal'], keep='first')
+        
+        # Save to CSV
+        df_new.to_csv(master_file, index=False)
+        
+        logger.info(f"[MERGE] ✅ Merge sukses!")
+        logger.info(f"   Previous size: {len(df_master)} rows")
+        logger.info(f"   New size: {len(df_new)} rows")
+        logger.info(f"   Added: {target_date_str} dengan data:")
+        logger.info(f"   - PM2.5: {aggregation_data.get('pm2_5 (μg/m³)_mean')} μg/m³")
+        logger.info(f"   - O3: {aggregation_data.get('ozone (μg/m³)_mean')} μg/m³")
+        logger.info(f"   - CO: {aggregation_data.get('carbon_monoxide (μg/m³)_mean')} μg/m³")
         
         return True
         

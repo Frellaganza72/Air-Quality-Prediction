@@ -167,7 +167,7 @@ export default function History() {
               <tbody>
                 {data.slice(0, 20).map((row: HistoryRecord, i: number) => {
                   // Handle new API structure (data_type: 'actual', measurements: {...})
-                  const measurements = row.measurements || {};
+                  const measurements = (row.measurements || {}) as Record<string, any>;
                   const ispu_obj = row.ispu || { overall: "Baik", color: "#22c55e" };
                   
                   // Fallback to old structure if needed
@@ -182,11 +182,10 @@ export default function History() {
                     );
                   };
 
-                  const getVal = (key: keyof Prediction) => {
+                  const getVal = (key: "pm25" | "o3" | "co") => {
                     // Try new structure first
-                    if (measurements) {
-                      const v = (measurements as Record<string, unknown>)[key];
-                      if (typeof v === "number") return v.toFixed(1);
+                    if (measurements && typeof measurements[key] === "number") {
+                      return measurements[key].toFixed(1);
                     }
                     
                     // Fallback to old structure

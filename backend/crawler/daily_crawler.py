@@ -82,8 +82,12 @@ def crawl_daily(target_date: date = None, save_to_db: bool = True, skip_if_exist
     try:
         air_url = (
             f"https://air-quality-api.open-meteo.com/v1/air-quality?"
-            f"latitude={latitude}&longitude={longitude}&hourly=pm10,pm2_5,ozone,carbon_monoxide"
-            f"&timezone=Asia/Bangkok&start_date={today_str}&end_date={today_str}"
+            f"latitude={latitude}"
+            f"&longitude={longitude}"
+            f"&hourly=pm10,pm2_5,ozone,carbon_monoxide"
+            f"&timezone=Asia/Bangkok"
+            f"&start_date={today_str}"
+            f"&end_date={today_str}"
         )
         
         response = requests.get(air_url, timeout=30)
@@ -91,9 +95,20 @@ def crawl_daily(target_date: date = None, save_to_db: bool = True, skip_if_exist
         
         air_res = response.json()
         if "hourly" in air_res and len(air_res["hourly"]) > 0:
-            df_polut = pd.DataFrame(air_res["hourly"])
+            df_hourly = pd.DataFrame(air_res["hourly"])
             
-            # Simpan ke CSV
+            # 🔄 AGGREGATE: Konversi dari hourly ke daily (mean, min, max)
+            df_polut = pd.DataFrame()
+            for col in ['pm10', 'pm2_5', 'ozone', 'carbon_monoxide']:
+                if col in df_hourly.columns:
+                    df_polut[f'{col}_mean'] = [df_hourly[col].mean()]
+                    df_polut[f'{col}_max'] = [df_hourly[col].max()]
+                    df_polut[f'{col}_min'] = [df_hourly[col].min()]
+                    df_polut[f'{col}_median'] = [df_hourly[col].median()]
+            
+            logger.info(f"✅ Data polutan di-aggregate: {len(df_hourly)} records → 1 daily record")
+            
+            # Simpan ke CSV (opsional - untuk referensi)
             polutan_file = data_dir / f"polutan_{today_str}.csv"
             df_polut.to_csv(polutan_file, index=False)
             
@@ -128,7 +143,11 @@ def crawl_daily(target_date: date = None, save_to_db: bool = True, skip_if_exist
         try:
             weather_url = (
                 f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
-                f"Malang/{today_str}?unitGroup=metric&include=hours&key={api_key}&contentType=csv"
+                f"Malang/{today_str}"
+                f"?unitGroup=metric"
+                f"&include=hours"
+                f"&key={api_key}"
+                f"&contentType=csv"
             )
             
             response = requests.get(weather_url, timeout=30)
@@ -149,6 +168,32 @@ def crawl_daily(target_date: date = None, save_to_db: bool = True, skip_if_exist
             response.raise_for_status()
             
             df_cuaca = pd.read_csv(weather_url)
+            
+            # 🔄 AGGREGATE: Konversi dari hourly ke daily (mean, min, max)
+            # Visual Crossing returns hourly weather data; aggregate untuk daily statistics
+            weather_agg = pd.DataFrame()
+            
+            # Kolom-kolom yang akan di-aggregate
+            cols_to_agg = ['temp', 'feelslike', 'humidity', 'windspeed', 'winddir', 
+                          'pressure', 'cloudcover', 'visibility', 'solarradiation']
+            
+            for col in cols_to_agg:
+                if col in df_cuaca.columns:
+                    # Aggregate: mean dan max untuk setiap kolom
+                    weather_agg[f'{col}_mean'] = [df_cuaca[col].mean()]
+                    weather_agg[f'{col}_max'] = [df_cuaca[col].max()]
+            
+            # Tambahkan daily values (tempmax, tempmin, datetime)
+            if 'tempmax' in df_cuaca.columns:
+                weather_agg['tempmax'] = [df_cuaca['tempmax'].iloc[0]]
+            if 'tempmin' in df_cuaca.columns:
+                weather_agg['tempmin'] = [df_cuaca['tempmin'].iloc[0]]
+            if 'datetime' in df_cuaca.columns:
+                weather_agg['datetime'] = [df_cuaca['datetime'].iloc[0]]
+            
+            df_cuaca = weather_agg
+            
+            logger.info(f"✅ Data cuaca di-aggregate dari hourly → 1 daily record")
             
             # Simpan ke CSV
             cuaca_file = data_dir / f"cuaca_{today_str}.csv"

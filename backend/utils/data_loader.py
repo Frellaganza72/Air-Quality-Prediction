@@ -195,7 +195,7 @@ class DataLoader:
     
     def get_latest_data_from_sqlite(self, target_date=None):
         """
-        Fetch and aggregate the most recent day's data from SQLite database.
+        Fetch the most recent day's aggregated data from SQLite database.
         Used as fallback when requesting future dates (e.g., today when no data exists yet).
         
         If target_date is provided, use its temporal features (hari, bulan) instead of latest date's.
@@ -212,93 +212,74 @@ class DataLoader:
             cursor = conn.cursor()
             
             # Get the latest date with data
-            cursor.execute("""
-                SELECT DISTINCT tanggal FROM polutan 
-                ORDER BY tanggal DESC LIMIT 1
-            """)
+            cursor.execute("SELECT MAX(tanggal) as latest FROM polutan")
             result = cursor.fetchone()
             
-            if not result:
+            if not result or not result['latest']:
                 conn.close()
                 return None
             
-            latest_date_str = result['tanggal']
+            latest_date_str = result['latest']
             
-            # Fetch pollutant data for that day
+            # Fetch aggregated pollutant data for that day
             cursor.execute("""
-                SELECT waktu, pm2_5, ozone, carbon_monoxide 
+                SELECT tanggal, 
+                       pm2_5_mean, pm2_5_max, pm2_5_min, pm2_5_median,
+                       ozone_mean, ozone_max, ozone_min, ozone_median,
+                       carbon_monoxide_mean, carbon_monoxide_max, carbon_monoxide_min, carbon_monoxide_median,
+                       pm10_mean, pm10_max, pm10_min, pm10_median
                 FROM polutan 
-                WHERE tanggal = ? 
-                ORDER BY waktu
+                WHERE tanggal = ?
             """, (latest_date_str,))
             
-            polutan_rows = cursor.fetchall()
-            if not polutan_rows:
+            polutan_row = cursor.fetchone()
+            if polutan_row is None:
                 conn.close()
                 return None
             
-            # Fetch weather data for that day
+            # Fetch aggregated weather data for that day
             cursor.execute("""
-                SELECT datetime, temp, humidity, windspeed, winddir, 
-                       sealevelpressure, cloudcover, visibility, solarradiation
+                SELECT tanggal,
+                       temp_mean, temp_max, tempmax, tempmin,
+                       humidity_mean, humidity_max,
+                       windspeed_mean, windspeed_max, winddir_mean,
+                       sealevelpressure_mean, sealevelpressure_max,
+                       cloudcover_mean, cloudcover_max,
+                       visibility_mean, visibility_max,
+                       solarradiation_mean, solarradiation_max
                 FROM cuaca 
-                WHERE tanggal = ? 
-                ORDER BY datetime
+                WHERE tanggal = ?
             """, (latest_date_str,))
             
-            weather_rows = cursor.fetchall()
+            weather_row = cursor.fetchone()
             conn.close()
             
-            # Aggregate pollutant data
-            pm25_values = [float(row['pm2_5']) for row in polutan_rows if row['pm2_5'] is not None]
-            o3_values = [float(row['ozone']) for row in polutan_rows if row['ozone'] is not None]
-            co_values = [float(row['carbon_monoxide']) for row in polutan_rows if row['carbon_monoxide'] is not None]
-            
-            if not pm25_values or not o3_values or not co_values:
-                return None
-            
+            # Build aggregated data using database values
             agg_data = {
                 'tanggal': pd.to_datetime(latest_date_str),
-                'pm2_5 (μg/m³)_mean': np.mean(pm25_values),
-                'pm2_5 (μg/m³)_max': np.max(pm25_values),
-                'pm2_5 (μg/m³)_median': np.median(pm25_values),
-                'ozone (μg/m³)_mean': np.mean(o3_values),
-                'ozone (μg/m³)_max': np.max(o3_values),
-                'ozone (μg/m³)_median': np.median(o3_values),
-                'carbon_monoxide (μg/m³)_mean': np.mean(co_values),
-                'carbon_monoxide (μg/m³)_max': np.max(co_values),
-                'carbon_monoxide (μg/m³)_median': np.median(co_values),
+                'pm2_5 (μg/m³)_mean': float(polutan_row['pm2_5_mean']) if polutan_row['pm2_5_mean'] is not None else 25.0,
+                'pm2_5 (μg/m³)_max': float(polutan_row['pm2_5_max']) if polutan_row['pm2_5_max'] is not None else 40.0,
+                'pm2_5 (μg/m³)_median': float(polutan_row['pm2_5_median']) if polutan_row['pm2_5_median'] is not None else 25.0,
+                'ozone (μg/m³)_mean': float(polutan_row['ozone_mean']) if polutan_row['ozone_mean'] is not None else 50.0,
+                'ozone (μg/m³)_max': float(polutan_row['ozone_max']) if polutan_row['ozone_max'] is not None else 80.0,
+                'ozone (μg/m³)_median': float(polutan_row['ozone_median']) if polutan_row['ozone_median'] is not None else 50.0,
+                'carbon_monoxide (μg/m³)_mean': float(polutan_row['carbon_monoxide_mean']) if polutan_row['carbon_monoxide_mean'] is not None else 500.0,
+                'carbon_monoxide (μg/m³)_max': float(polutan_row['carbon_monoxide_max']) if polutan_row['carbon_monoxide_max'] is not None else 800.0,
+                'carbon_monoxide (μg/m³)_median': float(polutan_row['carbon_monoxide_median']) if polutan_row['carbon_monoxide_median'] is not None else 500.0,
             }
             
-            # Aggregate weather data
-            if weather_rows:
-                temp_values = [float(row['temp']) for row in weather_rows if row['temp'] is not None]
-                humidity_values = [float(row['humidity']) for row in weather_rows if row['humidity'] is not None]
-                windspeed_values = [float(row['windspeed']) for row in weather_rows if row['windspeed'] is not None]
-                winddir_values = [float(row['winddir']) for row in weather_rows if row['winddir'] is not None]
-                pressure_values = [float(row['sealevelpressure']) for row in weather_rows if row['sealevelpressure'] is not None]
-                cloudcover_values = [float(row['cloudcover']) for row in weather_rows if row['cloudcover'] is not None]
-                visibility_values = [float(row['visibility']) for row in weather_rows if row['visibility'] is not None]
-                solarrad_values = [float(row['solarradiation']) for row in weather_rows if row['solarradiation'] is not None]
-                
-                if temp_values:
-                    agg_data['tempmin'] = np.min(temp_values)
-                    agg_data['tempmax'] = np.max(temp_values)
-                    agg_data['temp'] = np.mean(temp_values)
-                if humidity_values:
-                    agg_data['humidity'] = np.mean(humidity_values)
-                if windspeed_values:
-                    agg_data['windspeed'] = np.mean(windspeed_values)
-                if winddir_values:
-                    agg_data['winddir'] = np.mean(winddir_values)
-                if pressure_values:
-                    agg_data['sealevelpressure'] = np.mean(pressure_values)
-                if cloudcover_values:
-                    agg_data['cloudcover'] = np.mean(cloudcover_values)
-                if visibility_values:
-                    agg_data['visibility'] = np.mean(visibility_values)
-                if solarrad_values:
-                    agg_data['solarradiation'] = np.mean(solarrad_values)
+            # Add weather data if available
+            if weather_row is not None:
+                agg_data['tempmin'] = float(weather_row['tempmin']) if weather_row['tempmin'] is not None else 20.0
+                agg_data['tempmax'] = float(weather_row['tempmax']) if weather_row['tempmax'] is not None else 30.0
+                agg_data['temp'] = float(weather_row['temp_mean']) if weather_row['temp_mean'] is not None else 25.0
+                agg_data['humidity'] = float(weather_row['humidity_mean']) if weather_row['humidity_mean'] is not None else 80.0
+                agg_data['windspeed'] = float(weather_row['windspeed_mean']) if weather_row['windspeed_mean'] is not None else 5.0
+                agg_data['winddir'] = float(weather_row['winddir_mean']) if weather_row['winddir_mean'] is not None else 180.0
+                agg_data['sealevelpressure'] = float(weather_row['sealevelpressure_mean']) if weather_row['sealevelpressure_mean'] is not None else 1013.0
+                agg_data['cloudcover'] = float(weather_row['cloudcover_mean']) if weather_row['cloudcover_mean'] is not None else 50.0
+                agg_data['visibility'] = float(weather_row['visibility_mean']) if weather_row['visibility_mean'] is not None else 10.0
+                agg_data['solarradiation'] = float(weather_row['solarradiation_mean']) if weather_row['solarradiation_mean'] is not None else 200.0
             
             # Add temporal features
             # If target_date provided, use its temporal info; otherwise use latest date's
@@ -306,44 +287,44 @@ class DataLoader:
             agg_data['hari'] = date_for_temporal.day
             agg_data['bulan'] = date_for_temporal.month
             agg_data['is_weekend'] = 1 if date_for_temporal.weekday() >= 5 else 0
-            agg_data['tanggal'] = date_for_temporal  # Override with target date for consistency
+            agg_data['tanggal'] = date_for_temporal
             
-            # Normalize weather features to [0, 1] range to match training data
-            # Use typical min/max ranges for Indonesian tropical weather
+            # Normalize weather features
             normalization_ranges = {
-                'tempmax': (15, 35),      # Typical max temp in Celsius
-                'tempmin': (15, 30),      # Typical min temp
-                'temp': (15, 35),         # Typical mean temp
-                'humidity': (40, 95),     # Typical humidity percentage
-                'windspeed': (0, 30),     # Typical wind speed km/h
-                'winddir': (0, 360),      # Wind direction degrees
-                'sealevelpressure': (1010, 1015),  # hPa
-                'cloudcover': (0, 100),   # Cloud cover percentage
-                'visibility': (0, 50),    # km
-                'solarradiation': (0, 800),  # W/m2
+                'tempmax': (15, 35),
+                'tempmin': (15, 30),
+                'temp': (15, 35),
+                'humidity': (40, 95),
+                'windspeed': (0, 30),
+                'winddir': (0, 360),
+                'sealevelpressure': (1010, 1015),
+                'cloudcover': (0, 100),
+                'visibility': (0, 50),
+                'solarradiation': (0, 800),
             }
             
             for feature, (min_val, max_val) in normalization_ranges.items():
                 if feature in agg_data and agg_data[feature] is not None:
-                    # Normalize to [0, 1]
                     raw_val = agg_data[feature]
                     if max_val > min_val:
                         normalized = (raw_val - min_val) / (max_val - min_val)
-                        # Clip to [0, 1] range
                         agg_data[feature] = np.clip(normalized, 0.0, 1.0)
                     else:
-                        agg_data[feature] = 0.5  # fallback to middle value
+                        agg_data[feature] = 0.5
             
             return agg_data
             
         except Exception as e:
             print(f"⚠️ Error fetching latest data from SQLite: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
             return None
     
     def get_data_for_date_from_sqlite(self, target_date):
         """
-        Fetch and aggregate hourly data from SQLite database for a specific date.
-        Returns daily aggregated data with mean/max/median for pollutants and weather.
+        Fetch aggregated daily data from SQLite database for a specific date.
+        Data is already aggregated in database (mean, max, min, median).
         """
         try:
             import sqlite3
@@ -357,81 +338,65 @@ class DataLoader:
             
             date_str = target_date.strftime('%Y-%m-%d')
             
-            # Fetch pollutant data for the day
+            # Fetch aggregated pollutant data (already computed in DB)
             cursor.execute("""
-                SELECT waktu, pm2_5, ozone, carbon_monoxide 
+                SELECT tanggal, 
+                       pm2_5_mean, pm2_5_max, pm2_5_min, pm2_5_median,
+                       ozone_mean, ozone_max, ozone_min, ozone_median,
+                       carbon_monoxide_mean, carbon_monoxide_max, carbon_monoxide_min, carbon_monoxide_median,
+                       pm10_mean, pm10_max, pm10_min, pm10_median
                 FROM polutan 
-                WHERE tanggal = ? 
-                ORDER BY waktu
+                WHERE tanggal = ?
             """, (date_str,))
             
-            polutan_rows = cursor.fetchall()
-            if not polutan_rows:
+            polutan_row = cursor.fetchone()
+            if polutan_row is None:
                 conn.close()
                 return None
             
-            # Fetch weather data for the day
+            # Fetch aggregated weather data (already computed in DB)
             cursor.execute("""
-                SELECT datetime, temp, humidity, windspeed, winddir, 
-                       sealevelpressure, cloudcover, visibility, solarradiation
+                SELECT tanggal,
+                       temp_mean, temp_max, tempmax, tempmin,
+                       humidity_mean, humidity_max,
+                       windspeed_mean, windspeed_max, winddir_mean,
+                       sealevelpressure_mean, sealevelpressure_max,
+                       cloudcover_mean, cloudcover_max,
+                       visibility_mean, visibility_max,
+                       solarradiation_mean, solarradiation_max
                 FROM cuaca 
-                WHERE tanggal = ? 
-                ORDER BY datetime
+                WHERE tanggal = ?
             """, (date_str,))
             
-            weather_rows = cursor.fetchall()
+            weather_row = cursor.fetchone()
             conn.close()
             
-            # Aggregate pollutant data: mean, max, median
-            pm25_values = [float(row['pm2_5']) for row in polutan_rows if row['pm2_5'] is not None]
-            o3_values = [float(row['ozone']) for row in polutan_rows if row['ozone'] is not None]
-            co_values = [float(row['carbon_monoxide']) for row in polutan_rows if row['carbon_monoxide'] is not None]
-            
-            if not pm25_values or not o3_values or not co_values:
-                return None
-            
+            # Build aggregated data dictionary using database values
             agg_data = {
                 'tanggal': target_date,
-                'pm2_5 (μg/m³)_mean': np.mean(pm25_values),
-                'pm2_5 (μg/m³)_max': np.max(pm25_values),
-                'pm2_5 (μg/m³)_median': np.median(pm25_values),
-                'ozone (μg/m³)_mean': np.mean(o3_values),
-                'ozone (μg/m³)_max': np.max(o3_values),
-                'ozone (μg/m³)_median': np.median(o3_values),
-                'carbon_monoxide (μg/m³)_mean': np.mean(co_values),
-                'carbon_monoxide (μg/m³)_max': np.max(co_values),
-                'carbon_monoxide (μg/m³)_median': np.median(co_values),
+                'pm2_5 (μg/m³)_mean': float(polutan_row['pm2_5_mean']) if polutan_row['pm2_5_mean'] is not None else 25.0,
+                'pm2_5 (μg/m³)_max': float(polutan_row['pm2_5_max']) if polutan_row['pm2_5_max'] is not None else 40.0,
+                'pm2_5 (μg/m³)_median': float(polutan_row['pm2_5_median']) if polutan_row['pm2_5_median'] is not None else 25.0,
+                'ozone (μg/m³)_mean': float(polutan_row['ozone_mean']) if polutan_row['ozone_mean'] is not None else 50.0,
+                'ozone (μg/m³)_max': float(polutan_row['ozone_max']) if polutan_row['ozone_max'] is not None else 80.0,
+                'ozone (μg/m³)_median': float(polutan_row['ozone_median']) if polutan_row['ozone_median'] is not None else 50.0,
+                'carbon_monoxide (μg/m³)_mean': float(polutan_row['carbon_monoxide_mean']) if polutan_row['carbon_monoxide_mean'] is not None else 500.0,
+                'carbon_monoxide (μg/m³)_max': float(polutan_row['carbon_monoxide_max']) if polutan_row['carbon_monoxide_max'] is not None else 800.0,
+                'carbon_monoxide (μg/m³)_median': float(polutan_row['carbon_monoxide_median']) if polutan_row['carbon_monoxide_median'] is not None else 500.0,
             }
             
-            # Aggregate weather data
-            if weather_rows:
-                temp_values = [float(row['temp']) for row in weather_rows if row['temp'] is not None]
-                humidity_values = [float(row['humidity']) for row in weather_rows if row['humidity'] is not None]
-                windspeed_values = [float(row['windspeed']) for row in weather_rows if row['windspeed'] is not None]
-                winddir_values = [float(row['winddir']) for row in weather_rows if row['winddir'] is not None]
-                pressure_values = [float(row['sealevelpressure']) for row in weather_rows if row['sealevelpressure'] is not None]
-                cloudcover_values = [float(row['cloudcover']) for row in weather_rows if row['cloudcover'] is not None]
-                visibility_values = [float(row['visibility']) for row in weather_rows if row['visibility'] is not None]
-                solarrad_values = [float(row['solarradiation']) for row in weather_rows if row['solarradiation'] is not None]
-                
-                if temp_values:
-                    agg_data['tempmin'] = np.min(temp_values)
-                    agg_data['tempmax'] = np.max(temp_values)
-                    agg_data['temp'] = np.mean(temp_values)
-                if humidity_values:
-                    agg_data['humidity'] = np.mean(humidity_values)
-                if windspeed_values:
-                    agg_data['windspeed'] = np.mean(windspeed_values)
-                if winddir_values:
-                    agg_data['winddir'] = np.mean(winddir_values)
-                if pressure_values:
-                    agg_data['sealevelpressure'] = np.mean(pressure_values)
-                if cloudcover_values:
-                    agg_data['cloudcover'] = np.mean(cloudcover_values)
-                if visibility_values:
-                    agg_data['visibility'] = np.mean(visibility_values)
-                if solarrad_values:
-                    agg_data['solarradiation'] = np.mean(solarrad_values)
+            # Add weather data if available
+            if weather_row is not None:
+                agg_data['tempmin'] = float(weather_row['tempmin']) if weather_row['tempmin'] is not None else 20.0
+                agg_data['tempmax'] = float(weather_row['tempmax']) if weather_row['tempmax'] is not None else 30.0
+                agg_data['temp'] = float(weather_row['temp_mean']) if weather_row['temp_mean'] is not None else 25.0
+                agg_data['humidity'] = float(weather_row['humidity_mean']) if weather_row['humidity_mean'] is not None else 80.0
+                agg_data['windspeed'] = float(weather_row['windspeed_mean']) if weather_row['windspeed_mean'] is not None else 5.0
+                agg_data['winddir'] = float(weather_row['winddir_mean']) if weather_row['winddir_mean'] is not None else 180.0
+                agg_data['sealevelpressure'] = float(weather_row['sealevelpressure_mean']) if weather_row['sealevelpressure_mean'] is not None else 1013.0
+                agg_data['cloudcover'] = float(weather_row['cloudcover_mean']) if weather_row['cloudcover_mean'] is not None else 50.0
+                agg_data['visibility'] = float(weather_row['visibility_mean']) if weather_row['visibility_mean'] is not None else 10.0
+                agg_data['solarradiation'] = float(weather_row['solarradiation_mean']) if weather_row['solarradiation_mean'] is not None else 200.0
             
             # Add temporal features
             agg_data['hari'] = target_date.day
@@ -439,35 +404,34 @@ class DataLoader:
             agg_data['is_weekend'] = 1 if target_date.weekday() >= 5 else 0
             
             # Normalize weather features to [0, 1] range to match training data
-            # Use typical min/max ranges for Indonesian tropical weather
             normalization_ranges = {
-                'tempmax': (15, 35),      # Typical max temp in Celsius
-                'tempmin': (15, 30),      # Typical min temp
-                'temp': (15, 35),         # Typical mean temp
-                'humidity': (40, 95),     # Typical humidity percentage
-                'windspeed': (0, 30),     # Typical wind speed km/h
-                'winddir': (0, 360),      # Wind direction degrees
-                'sealevelpressure': (1010, 1015),  # hPa
-                'cloudcover': (0, 100),   # Cloud cover percentage
-                'visibility': (0, 50),    # km
-                'solarradiation': (0, 800),  # W/m2
+                'tempmax': (15, 35),
+                'tempmin': (15, 30),
+                'temp': (15, 35),
+                'humidity': (40, 95),
+                'windspeed': (0, 30),
+                'winddir': (0, 360),
+                'sealevelpressure': (1010, 1015),
+                'cloudcover': (0, 100),
+                'visibility': (0, 50),
+                'solarradiation': (0, 800),
             }
             
             for feature, (min_val, max_val) in normalization_ranges.items():
                 if feature in agg_data and agg_data[feature] is not None:
-                    # Normalize to [0, 1]
                     raw_val = agg_data[feature]
                     if max_val > min_val:
                         normalized = (raw_val - min_val) / (max_val - min_val)
-                        # Clip to [0, 1] range
                         agg_data[feature] = np.clip(normalized, 0.0, 1.0)
                     else:
-                        agg_data[feature] = 0.5  # fallback to middle value
+                        agg_data[feature] = 0.5
             
             return agg_data
             
         except Exception as e:
             print(f"⚠️ Error fetching from SQLite: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def get_data_for_date(self, target_date):
